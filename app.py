@@ -1,94 +1,53 @@
-from flask import Flask, redirect, request, session, jsonify
+import os
+from flask import Flask, request, jsonify
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
-import os
 
 app = Flask(__name__)
-app.secret_key = os.getenv("FLASK_SECRET_KEY", "supersecret")
 
-# Configuración de Spotify
+# Lee variables de entorno (carga tus valores reales aquí)
 CLIENT_ID = os.getenv("SPOTIPY_CLIENT_ID")
 CLIENT_SECRET = os.getenv("SPOTIPY_CLIENT_SECRET")
-REDIRECT_URI = os.getenv("SPOTIPY_REDIRECT_URI", "https://spotifypc.onrender.com/callback")
-SCOPE = "user-read-playback-state user-modify-playback-state user-read-currently-playing"
+REDIRECT_URI = os.getenv("SPOTIPY_REDIRECT_URI")
+REFRESH_TOKEN = os.getenv("SPOTIPY_REFRESH_TOKEN")  # Este lo generas una vez
 
-sp_oauth = SpotifyOAuth(
-    client_id=CLIENT_ID,
-    client_secret=CLIENT_SECRET,
-    redirect_uri=REDIRECT_URI,
-    scope=SCOPE,
-    cache_path=None,
-    show_dialog=True
-)
+# Usa un auth manager temporal, solo para refrescar el token
+def get_spotify_client():
+    auth_manager = SpotifyOAuth(
+        client_id=CLIENT_ID,
+        client_secret=CLIENT_SECRET,
+        redirect_uri=REDIRECT_URI
+    )
 
-# Ruta de inicio
-@app.route("/")
-def home():
-    return "🎶 API de Música PC está activa. Visita /login para autorizar."
+    # Refresca token usando el refresh_token
+    token_info = auth_manager.refresh_access_token(REFRESH_TOKEN)
+    access_token = token_info["access_token"]
 
-# Redirige a Spotify
-@app.route("/login")
-def login():
-    auth_url = sp_oauth.get_authorize_url()
-    return redirect(auth_url)
+    return spotipy.Spotify(auth=access_token)
 
-# Recibe el callback con el código de autorización
-@app.route("/callback")
-def callback():
-    code = request.args.get("code")
-    if not code:
-        return "No se recibió código", 400
-
-    token_info = sp_oauth.get_access_token(code, as_dict=True)
-    session["token_info"] = token_info
-    return "✅ Login exitoso. Ya puedes usar /play"
-
-# Devuelve una instancia de Spotify autenticada
-def get_spotify():
-    token_info = session.get("token_info")
-    if not token_info:
-        return None
-
-    if sp_oauth.is_token_expired(token_info):
-        token_info = sp_oauth.refresh_access_token(token_info["refresh_token"])
-        session["token_info"] = token_info
-
-    return spotipy.Spotify(auth=token_info["access_token"])
-
-# Reproduce una canción
 @app.route("/play", methods=["POST"])
 def play():
-    sp = get_spotify()
-    if not sp:
-        return redirect("/login")
-
     data = request.get_json()
     song = data.get("song")
+
     if not song:
-        return jsonify({"error": "Debes enviar 'song' en el cuerpo del JSON"}), 400
+        return jsonify({"error": "No song provided"}), 400
 
-    results = sp.search(q=song, limit=1, type='track')
-    tracks = results.get("tracks", {}).get("items", [])
+    try:
+        sp = get_spotify_client()
 
-    if not tracks:
-        return jsonify({"error": "Canción no encontrada"}), 404
+        results = sp.search(q=song, limit=1, type="track")
+        tracks = results.get("tracks", {}).get("items", [])
 
-    track_uri = tracks[0]["uri"]
+        if not tracks:
+            return jsonify({"error": "No tracks found"}), 404
 
-    devices = sp.devices().get("devices", [])
-    if not devices:
-        return jsonify({"error": "No hay dispositivos activos"}), 400
+        track_uri = tracks[0]["uri"]
+        sp.start_playback(uris=[track_uri])
 
-    sp.start_playback(device_id=devices[0]["id"], uris=[track_uri])
+        return jsonify({"message": f"Playing {tracks[0]['name']}"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-    return jsonify({"status": "Reproduciendo", "track": tracks[0]["name"]})
-
-
-# Debug endpoint opcional
-@app.route("/me")
-def me():
-    sp = get_spotify()
-    if not sp:
-        return redirect("/login")
-    user = sp.me()
-    return jsonify(user)
+if __name__ == "__main__":
+    app.run(debug=True)
