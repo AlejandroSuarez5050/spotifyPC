@@ -5,11 +5,12 @@ from spotipy.oauth2 import SpotifyOAuth
 
 app = Flask(__name__)
 
-# Lee variables de entorno (carga tus valores reales aquí)
+# Lee variables de entorno
 CLIENT_ID = os.getenv("SPOTIPY_CLIENT_ID")
 CLIENT_SECRET = os.getenv("SPOTIPY_CLIENT_SECRET")
 REDIRECT_URI = os.getenv("SPOTIPY_REDIRECT_URI")
-REFRESH_TOKEN = os.getenv("SPOTIPY_REFRESH_TOKEN")  # Este lo generas una vez
+REFRESH_TOKEN = os.getenv("SPOTIPY_REFRESH_TOKEN")
+ALEXA_SECRET_KEY = os.environ.get("ALEXA_SECRET_KEY")
 
 # Usa un auth manager temporal, solo para refrescar el token
 def get_spotify_client():
@@ -25,29 +26,40 @@ def get_spotify_client():
 
     return spotipy.Spotify(auth=access_token)
 
-@app.route("/play", methods=["POST"])
+@app.route('/')
+def home():
+    return 'API de Música PC activa con seguridad 🔐'
+
+@app.route('/play', methods=['POST'])
 def play():
+    # Verifica la llave secreta
+    received_key = request.headers.get('x-alexa-key')
+    if received_key != ALEXA_SECRET_KEY:
+        abort(403, description="Clave inválida")
+
     data = request.get_json()
-    song = data.get("song")
+    song = data.get('song', '')
 
-    if not song:
-        return jsonify({"error": "No song provided"}), 400
+    sp = get_spotify_client()
 
-    try:
-        sp = get_spotify_client()
+    # Buscar canción
+    results = sp.search(q=song, limit=1, type='track')
+    tracks = results.get('tracks', {}).get('items', [])
 
-        results = sp.search(q=song, limit=1, type="track")
-        tracks = results.get("tracks", {}).get("items", [])
+    if not tracks:
+        return jsonify({'error': 'Canción no encontrada'}), 404
 
-        if not tracks:
-            return jsonify({"error": "No tracks found"}), 404
+    track_uri = tracks[0]['uri']
 
-        track_uri = tracks[0]["uri"]
-        sp.start_playback(uris=[track_uri])
+    # Obtener dispositivo y reproducir
+    devices = sp.devices()['devices']
+    if not devices:
+        return jsonify({'error': 'No hay dispositivos activos'}), 400
 
-        return jsonify({"message": f"Playing {tracks[0]['name']}"}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    device_id = devices[0]['id']
+    sp.start_playback(device_id=device_id, uris=[track_uri])
+
+    return jsonify({'status': 'playing', 'song': song})
 
 if __name__ == "__main__":
     app.run(debug=True)
